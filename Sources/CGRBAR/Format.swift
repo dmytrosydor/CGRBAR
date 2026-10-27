@@ -3,11 +3,13 @@ import Foundation
 enum Load: Equatable {
     case normal, high, critical
 
-    init(_ fraction: Double) {
-        switch fraction {
-        case 0.9...: self = .critical
-        case 0.7...: self = .high
-        default: self = .normal
+    init(_ fraction: Double, high: Double = 0.7, critical: Double = 0.9) {
+        if fraction >= critical {
+            self = .critical
+        } else if fraction >= high {
+            self = .high
+        } else {
+            self = .normal
         }
     }
 }

@@ -99,7 +99,7 @@ struct PanelView: View {
 
     private func tint(_ base: Color, _ value: Double?) -> Color {
         guard model.colorsByLoad, let value else { return base }
-        switch Load(value) {
+        switch Load(value, high: model.highThreshold, critical: model.criticalThreshold) {
         case .normal: return base
         case .high: return .orange
         case .critical: return .red

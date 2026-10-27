@@ -1,15 +1,15 @@
 import AppKit
-import ServiceManagement
 import SwiftUI
 
-/// Owns the menu bar item: samples metrics on a timer, updates the readout,
-/// shows the panel on click and the settings menu on right-click.
+/// Owns the menu bar items: samples metrics on a timer, updates the readouts,
+/// shows the panel on click and a quick menu on right-click.
 @MainActor
 final class StatusItemController: NSObject, NSMenuDelegate, NSPopoverDelegate {
     private let settings: Settings
-    private let statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
-    private let settingsMenu = NSMenu()
+    private let quickMenu = NSMenu()
     private let popover = NSPopover()
+    private lazy var settingsWindow = SettingsWindowController(settings: settings, preview: preview)
+    private let preview = MeterPreviewModel()
 
     private let cpuSampler = CPUSampler()
     private let gpuSampler = GPUSampler()
@@ -24,35 +24,49 @@ final class StatusItemController: NSObject, NSMenuDelegate, NSPopoverDelegate {
     private var memoryHistory = History(capacity: StatusItemController.historyCapacity)
 
     private var timer: Timer?
-    private let meter = MeterView()
-    private var lastSummary = ""
+    private var timerInterval: TimeInterval = 0
     /// Exists only while the panel is open.
     private var panel: PanelModel?
 
+    /// One combined item, or one item per metric.
+    private var items: [StatusEntry] = []
+    private var itemsLayout: [[Metric]] = []
+
     private var metricItems: [Metric: NSMenuItem] = [:]
     private var intervalItems: [NSMenuItem] = []
-    private let labelsItem = NSMenuItem(title: "Show Labels", action: #selector(toggleLabels), keyEquivalent: "")
-    private let colorItem = NSMenuItem(title: "Color by Load", action: #selector(toggleColor), keyEquivalent: "")
-    private let loginItem = NSMenuItem(title: "Launch at Login", action: #selector(toggleLogin), keyEquivalent: "")
 
     private static let meterPadding: CGFloat = 3
     private static let historyCapacity = 60
     private static let processLimit = 6
 
+    @MainActor
+    private final class StatusEntry {
+        let item: NSStatusItem
+        let meter = MeterView()
+        let metrics: [Metric]
+        var summary = ""
+
+        init(item: NSStatusItem, metrics: [Metric]) {
+            self.item = item
+            self.metrics = metrics
+        }
+    }
+
     init(settings: Settings) {
         self.settings = settings
         super.init()
-        setUpMeter()
-        buildSettingsMenu()
+        buildQuickMenu()
         popover.behavior = .transient
         popover.animates = true
         popover.delegate = self
+        settings.onChange = { [weak self] in self?.settingsChanged() }
     }
 
     func start() {
         let workspace = NSWorkspace.shared.notificationCenter
         workspace.addObserver(self, selector: #selector(screensDidSleep), name: NSWorkspace.screensDidSleepNotification, object: nil)
         workspace.addObserver(self, selector: #selector(screensDidWake), name: NSWorkspace.screensDidWakeNotification, object: nil)
+        rebuildItemsIfNeeded()
         tick()
         scheduleTimer()
     }
@@ -62,6 +76,7 @@ final class StatusItemController: NSObject, NSMenuDelegate, NSPopoverDelegate {
     private func scheduleTimer() {
         timer?.invalidate()
         let interval = settings.interval
+        timerInterval = interval
         let timer = Timer(timeInterval: interval, repeats: true) { [weak self] _ in
             MainActor.assumeIsolated { self?.tick() }
         }
@@ -73,7 +88,7 @@ final class StatusItemController: NSObject, NSMenuDelegate, NSPopoverDelegate {
 
     private func tick() {
         // All three together cost about 20 µs, so they always run to keep the
-        // panel's history complete.
+        // charts' history complete.
         if let cpu = cpuSampler.sample() {
             self.cpu = cpu
             cpuHistory.append(cpu.total)
@@ -83,7 +98,7 @@ final class StatusItemController: NSObject, NSMenuDelegate, NSPopoverDelegate {
         memory = memorySampler.sample()
         if let memory { memoryHistory.append(memory.fraction) }
 
-        updateMeter()
+        updateMeters()
         if panel != nil {
             processSampler.sample()
             updatePanel()
@@ -100,38 +115,84 @@ final class StatusItemController: NSObject, NSMenuDelegate, NSPopoverDelegate {
         scheduleTimer()
     }
 
-    // MARK: - Menu bar readout
+    // MARK: - Menu bar items
 
-    private func setUpMeter() {
-        guard let button = statusItem.button else { return }
-        meter.frame = button.bounds
-        meter.autoresizingMask = [.width, .height]
-        meter.onWidthChange = { [weak self] width in
-            self?.statusItem.length = ceil(width) + 2 * Self.meterPadding
+    /// Creates or removes status items when the combined/separate choice or
+    /// the shown metrics change. Separate items keep their own autosave names,
+    /// so positions picked with ⌘-drag survive restarts.
+    private func rebuildItemsIfNeeded() {
+        let shown = settings.shownMetrics
+        let layout = settings.separateItems ? shown.map { [$0] } : [shown]
+        guard layout != itemsLayout else { return }
+        itemsLayout = layout
+
+        if popover.isShown { popover.performClose(nil) }
+        for entry in items { NSStatusBar.system.removeStatusItem(entry.item) }
+        // macOS places each new item left of the existing ones, so create
+        // them from the last to keep the chosen order left to right.
+        items = layout.reversed().map { metrics in
+            let item = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
+            item.autosaveName = metrics.count == 1 && settings.separateItems
+                ? "cgrbar.\(metrics[0].rawValue)"
+                : "cgrbar.combined"
+            let entry = StatusEntry(item: item, metrics: metrics)
+            if let button = item.button {
+                entry.meter.frame = button.bounds
+                entry.meter.autoresizingMask = [.width, .height]
+                entry.meter.onWidthChange = { [weak item] width in
+                    item?.length = ceil(width) + 2 * Self.meterPadding
+                }
+                button.addSubview(entry.meter)
+                button.target = self
+                button.action = #selector(buttonClicked)
+                button.sendAction(on: [.leftMouseUp, .rightMouseUp])
+            }
+            return entry
         }
-        button.addSubview(meter)
-        button.target = self
-        button.action = #selector(buttonClicked)
-        button.sendAction(on: [.leftMouseUp, .rightMouseUp])
     }
 
-    private func updateMeter() {
-        let segments = settings.shownMetrics.map { metric in
-            let fraction = fraction(of: metric)
-            return MeterSegment(
-                label: settings.showsLabels ? metric.label : nil,
-                value: fraction.map(Format.number) ?? "–",
-                load: settings.colorsByLoad ? fraction.map(Load.init) ?? .normal : .normal
-            )
-        }
-        meter.update(segments)
+    private func updateMeters() {
+        let layout = meterLayout
+        for entry in items {
+            let segments = entry.metrics.map(segment)
+            entry.meter.update(segments, layout: layout)
 
-        let summary = segments.map { [$0.label, $0.value].compactMap { $0 }.joined(separator: " ") }
-            .joined(separator: ", ")
-        if summary != lastSummary {
-            lastSummary = summary
-            statusItem.button?.setAccessibilityLabel(summary)
+            let summary = segments.map { "\($0.metric.label) \($0.value.map(Format.percent) ?? "unavailable")" }
+                .joined(separator: ", ")
+            if summary != entry.summary {
+                entry.summary = summary
+                entry.item.button?.setAccessibilityLabel(summary)
+            }
         }
+        if settingsWindow.isVisible {
+            preview.segments = settings.shownMetrics.map(segment)
+            preview.layout = layout
+        }
+    }
+
+    private var meterLayout: MeterLayout {
+        MeterLayout(size: settings.size, spacing: settings.spacing)
+    }
+
+    private func segment(for metric: Metric) -> MeterSegment {
+        let value = fraction(of: metric)
+        let base: MeterTint = settings.colorMode == .metric ? .metric(metric) : .primary
+        var valueTint = base
+        if settings.colorsByLoad, let value {
+            switch settings.load(for: value) {
+            case .normal: break
+            case .high: valueTint = .high
+            case .critical: valueTint = .critical
+            }
+        }
+        return MeterSegment(
+            metric: metric,
+            style: settings.style(for: metric),
+            value: value,
+            history: history(of: metric),
+            labelTint: base,
+            valueTint: valueTint
+        )
     }
 
     private func fraction(of metric: Metric) -> Double? {
@@ -142,28 +203,37 @@ final class StatusItemController: NSObject, NSMenuDelegate, NSPopoverDelegate {
         }
     }
 
-    @objc private func buttonClicked() {
+    private func history(of metric: Metric) -> [Double] {
+        // Only the chart style draws history; skip copying it otherwise.
+        guard settings.style(for: metric) == .chart || settingsWindow.isVisible else { return [] }
+        return switch metric {
+        case .cpu: cpuHistory.values
+        case .gpu: gpuHistory.values
+        case .memory: memoryHistory.values
+        }
+    }
+
+    @objc private func buttonClicked(_ sender: NSStatusBarButton) {
         let event = NSApp.currentEvent
         if event?.type == .rightMouseUp || event?.modifierFlags.contains(.control) == true {
-            showSettingsMenu()
+            showQuickMenu(from: sender)
         } else {
-            togglePanel()
+            togglePanel(from: sender)
         }
     }
 
     // MARK: - Panel
 
-    private func togglePanel() {
+    private func togglePanel(from button: NSStatusBarButton) {
         if popover.isShown {
             popover.performClose(nil)
             return
         }
-        guard let button = statusItem.button else { return }
 
         let model = PanelModel()
         model.historyCapacity = Self.historyCapacity
         model.onSortChange = { [weak self] in self?.updatePanel() }
-        model.onShowSettings = { [weak self] in self?.showSettingsMenu() }
+        model.onShowSettings = { [weak self] in self?.openSettings() }
         model.onQuit = { NSApp.terminate(nil) }
         panel = model
 
@@ -197,6 +267,8 @@ final class StatusItemController: NSObject, NSMenuDelegate, NSPopoverDelegate {
         panel.gpuHistory = gpuHistory.values
         panel.memoryHistory = memoryHistory.values
         panel.colorsByLoad = settings.colorsByLoad
+        panel.highThreshold = settings.highThreshold
+        panel.criticalThreshold = max(settings.criticalThreshold, settings.highThreshold)
         panel.processes = processSampler.top(by: panel.processSort, limit: Self.processLimit)
     }
 
@@ -207,11 +279,27 @@ final class StatusItemController: NSObject, NSMenuDelegate, NSPopoverDelegate {
         processSampler.reset()
     }
 
-    // MARK: - Settings menu
+    // MARK: - Settings
 
-    private func buildSettingsMenu() {
-        settingsMenu.delegate = self
-        settingsMenu.autoenablesItems = false
+    private func openSettings() {
+        if popover.isShown { popover.performClose(nil) }
+        preview.segments = settings.shownMetrics.map(segment)
+        preview.layout = meterLayout
+        settingsWindow.show()
+    }
+
+    private func settingsChanged() {
+        if settings.interval != timerInterval { scheduleTimer() }
+        rebuildItemsIfNeeded()
+        updateMeters()
+        updatePanel()
+    }
+
+    // MARK: - Quick menu
+
+    private func buildQuickMenu() {
+        quickMenu.delegate = self
+        quickMenu.autoenablesItems = false
 
         let metricsMenu = NSMenu()
         for metric in Metric.allCases {
@@ -221,7 +309,7 @@ final class StatusItemController: NSObject, NSMenuDelegate, NSPopoverDelegate {
             metricsMenu.addItem(item)
             metricItems[metric] = item
         }
-        settingsMenu.addItem(submenu("Show in Menu Bar", metricsMenu))
+        quickMenu.addItem(submenu("Show in Menu Bar", metricsMenu))
 
         let intervalMenu = NSMenu()
         for interval in Settings.intervals {
@@ -231,21 +319,13 @@ final class StatusItemController: NSObject, NSMenuDelegate, NSPopoverDelegate {
             intervalMenu.addItem(item)
             intervalItems.append(item)
         }
-        settingsMenu.addItem(submenu("Update Every", intervalMenu))
+        quickMenu.addItem(submenu("Update Every", intervalMenu))
 
-        for item in [labelsItem, colorItem] {
-            item.target = self
-            settingsMenu.addItem(item)
-        }
-
-        // Login items need a real app bundle; hide the option for bare builds.
-        if Bundle.main.bundlePath.hasSuffix(".app") {
-            loginItem.target = self
-            settingsMenu.addItem(loginItem)
-        }
-
-        settingsMenu.addItem(.separator())
-        settingsMenu.addItem(NSMenuItem(title: "Quit CGRBAR", action: #selector(NSApplication.terminate), keyEquivalent: "q"))
+        quickMenu.addItem(.separator())
+        let settingsItem = NSMenuItem(title: "Settings…", action: #selector(showSettings), keyEquivalent: ",")
+        settingsItem.target = self
+        quickMenu.addItem(settingsItem)
+        quickMenu.addItem(NSMenuItem(title: "Quit CGRBAR", action: #selector(NSApplication.terminate), keyEquivalent: "q"))
     }
 
     private func submenu(_ title: String, _ submenu: NSMenu) -> NSMenuItem {
@@ -254,20 +334,11 @@ final class StatusItemController: NSObject, NSMenuDelegate, NSPopoverDelegate {
         return item
     }
 
-    private func showSettingsMenu() {
-        if popover.isShown {
-            // From the panel's gear button: open at the pointer.
-            settingsMenu.popUp(positioning: nil, at: NSEvent.mouseLocation, in: nil)
-        } else if let button = statusItem.button {
-            settingsMenu.popUp(positioning: nil, at: NSPoint(x: 0, y: button.bounds.height + 4), in: button)
-        }
+    private func showQuickMenu(from button: NSStatusBarButton) {
+        quickMenu.popUp(positioning: nil, at: NSPoint(x: 0, y: button.bounds.height + 4), in: button)
     }
 
     func menuWillOpen(_ menu: NSMenu) {
-        updateSettingsItems()
-    }
-
-    private func updateSettingsItems() {
         let shown = settings.shownMetrics
         for (metric, item) in metricItems {
             let isOn = shown.contains(metric)
@@ -278,54 +349,19 @@ final class StatusItemController: NSObject, NSMenuDelegate, NSPopoverDelegate {
         for item in intervalItems {
             item.state = item.representedObject as? TimeInterval == settings.interval ? .on : .off
         }
-        labelsItem.state = settings.showsLabels ? .on : .off
-        colorItem.state = settings.colorsByLoad ? .on : .off
-        loginItem.state = SMAppService.mainApp.status == .enabled ? .on : .off
     }
-
-    // MARK: - Actions
 
     @objc private func toggleMetric(_ sender: NSMenuItem) {
         guard let raw = sender.representedObject as? String, let metric = Metric(rawValue: raw) else { return }
         settings.setShown(metric, !settings.isShown(metric))
-        settingsChanged()
     }
 
     @objc private func selectInterval(_ sender: NSMenuItem) {
         guard let interval = sender.representedObject as? TimeInterval else { return }
         settings.interval = interval
-        scheduleTimer()
-        settingsChanged()
     }
 
-    @objc private func toggleLabels() {
-        settings.showsLabels.toggle()
-        settingsChanged()
-    }
-
-    @objc private func toggleColor() {
-        settings.colorsByLoad.toggle()
-        settingsChanged()
-    }
-
-    @objc private func toggleLogin() {
-        let service = SMAppService.mainApp
-        do {
-            if service.status == .enabled {
-                try service.unregister()
-            } else {
-                try service.register()
-            }
-        } catch {
-            let alert = NSAlert(error: error)
-            alert.runModal()
-        }
-        updateSettingsItems()
-    }
-
-    private func settingsChanged() {
-        updateMeter()
-        updatePanel()
-        updateSettingsItems()
+    @objc private func showSettings() {
+        openSettings()
     }
 }

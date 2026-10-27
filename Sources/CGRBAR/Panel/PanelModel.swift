@@ -16,6 +16,8 @@ final class PanelModel {
         didSet { onSortChange() }
     }
     var colorsByLoad = true
+    var highThreshold = 0.7
+    var criticalThreshold = 0.9
     var historyCapacity = 60
 
     @ObservationIgnored var onSortChange: () -> Void = {}
