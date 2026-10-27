@@ -140,8 +140,6 @@ private struct MetricCard<Detail: View>: View {
                     .font(.system(size: 22, weight: .semibold, design: .rounded))
                     .monospacedDigit()
                     .foregroundStyle(tint)
-                    .contentTransition(.numericText(value: value ?? 0))
-                    .animation(.snappy, value: value)
             }
 
             Chart(values: history, capacity: capacity, tint: tint)
