@@ -18,6 +18,11 @@ enum Format {
         "\(Int((min(max(fraction, 0), 1) * 100).rounded()))%"
     }
 
+    /// "12", for the menu bar where space is tight.
+    static func number(_ fraction: Double) -> String {
+        String(Int((min(max(fraction, 0), 1) * 100).rounded()))
+    }
+
     /// "10.2 GB", using binary units like Activity Monitor.
     static func bytes(_ value: UInt64) -> String {
         let gib = Double(value) / 1_073_741_824

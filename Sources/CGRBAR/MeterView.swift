@@ -8,10 +8,11 @@ struct MeterSegment: Equatable {
 
 /// Draws the menu bar readout without text layout on every update.
 ///
-/// Labels and single value characters are rendered once into cached images.
-/// An update only swaps the contents of the layers whose character changed,
-/// which avoids the button cell, CoreText and Auto Layout passes that a
-/// title change would trigger.
+/// Each metric is a narrow column: an optional tiny label stacked above the
+/// value. Labels and single value characters are rendered once into cached
+/// images. An update only swaps the contents of the layers whose character
+/// changed, which avoids the button cell, CoreText and Auto Layout passes that
+/// a title change would trigger.
 @MainActor
 final class MeterView: NSView {
     /// Called when the content width changes, so the status item can resize.
@@ -20,16 +21,22 @@ final class MeterView: NSView {
     private(set) var contentWidth: CGFloat = 0
     private var segments: [MeterSegment] = []
     private var cache: [String: Glyph] = [:]
-    private var slotWidth: CGFloat = 0
-    private var gap: CGFloat = 0
-    private var labelSpace: CGFloat = 0
+    private var slotWidths: [CGFloat: CGFloat] = [:]
 
-    private static let font = NSFont.monospacedDigitSystemFont(ofSize: NSFont.systemFontSize, weight: .regular)
-    private static let lineHeight = ceil(font.ascender - font.descender)
+    private static let gap: CGFloat = 6
+    private static let labelFont = NSFont.systemFont(ofSize: 7.5, weight: .semibold)
+    private static let stackedValueFont = NSFont.monospacedDigitSystemFont(ofSize: 11, weight: .semibold)
+    private static let inlineValueFont = NSFont.monospacedDigitSystemFont(ofSize: 12, weight: .medium)
 
     private struct Glyph {
         var image: CGImage
         var width: CGFloat
+    }
+
+    private struct Placement {
+        var glyph: Glyph
+        var x: CGFloat
+        var y: CGFloat
     }
 
     override init(frame: NSRect) {
@@ -67,7 +74,7 @@ final class MeterView: NSView {
 
     private func invalidate() {
         cache.removeAll()
-        slotWidth = 0
+        slotWidths.removeAll()
         render()
     }
 
@@ -75,27 +82,30 @@ final class MeterView: NSView {
 
     private func render() {
         guard let root = layer else { return }
-        if slotWidth == 0 {
-            slotWidth = width(of: "100%")
-            gap = width(of: "  ")
-            labelSpace = width(of: " ")
-        }
+        let stacked = segments.contains { $0.label != nil }
+        let valueFont = stacked ? Self.stackedValueFont : Self.inlineValueFont
+        // Every value column is as wide as "100", so the width never jumps.
+        let slotWidth = slotWidth(valueFont)
+        let valueHeight = lineHeight(valueFont)
+        let labelHeight = stacked ? lineHeight(Self.labelFont) - 1 : 0
+        let blockHeight = labelHeight + valueHeight
 
-        var placements: [(Glyph, CGFloat)] = []
+        var placements: [Placement] = []
         var x: CGFloat = 0
         for (index, segment) in segments.enumerated() {
-            if index > 0 { x += gap }
-            if let label = segment.label, let glyph = glyph(label, .normal) {
-                placements.append((glyph, x))
-                x += glyph.width + labelSpace
+            if index > 0 { x += Self.gap }
+            var columnWidth = slotWidth
+            if let label = segment.label, let glyph = glyph(label, font: Self.labelFont, load: .normal) {
+                columnWidth = max(columnWidth, glyph.width)
+                placements.append(Placement(glyph: glyph, x: x + (columnWidth - glyph.width) / 2, y: valueHeight - 1))
             }
-            // The value gets a fixed slot as wide as "100%", so the width never jumps.
-            var valueX = x
-            for glyph in segment.value.compactMap({ glyph(String($0), segment.load) }) {
-                placements.append((glyph, valueX))
+            let glyphs = segment.value.compactMap { glyph(String($0), font: valueFont, load: segment.load) }
+            var valueX = x + (columnWidth - glyphs.reduce(0) { $0 + $1.width }) / 2
+            for glyph in glyphs {
+                placements.append(Placement(glyph: glyph, x: valueX, y: 0))
                 valueX += glyph.width
             }
-            x += slotWidth
+            x += columnWidth
         }
 
         if x != contentWidth {
@@ -104,8 +114,8 @@ final class MeterView: NSView {
         }
 
         let scale = window?.backingScaleFactor ?? 2
-        let originX = ((bounds.width - x) / 2 * scale).rounded() / scale
-        let originY = ((bounds.height - Self.lineHeight) / 2 * scale).rounded() / scale
+        let originX = (bounds.width - x) / 2
+        let originY = (bounds.height - blockHeight) / 2
 
         CATransaction.begin()
         CATransaction.setDisableActions(true)
@@ -120,16 +130,17 @@ final class MeterView: NSView {
                 sublayer.isHidden = true
                 continue
             }
-            let (glyph, glyphX) = placements[index]
+            let placement = placements[index]
+            let image = placement.glyph.image
             // Snap to device pixels and keep the bitmap's own size, so glyphs stay sharp.
             let frame = CGRect(
-                x: ((originX + glyphX) * scale).rounded() / scale,
-                y: originY,
-                width: CGFloat(glyph.image.width) / scale,
-                height: CGFloat(glyph.image.height) / scale
+                x: ((originX + placement.x) * scale).rounded() / scale,
+                y: ((originY + placement.y) * scale).rounded() / scale,
+                width: CGFloat(image.width) / scale,
+                height: CGFloat(image.height) / scale
             )
             // Touch only what changed, so Core Animation commits as little as possible.
-            if (sublayer.contents as AnyObject?) !== glyph.image { sublayer.contents = glyph.image }
+            if (sublayer.contents as AnyObject?) !== image { sublayer.contents = image }
             if sublayer.frame != frame { sublayer.frame = frame }
             if sublayer.contentsScale != scale { sublayer.contentsScale = scale }
             if sublayer.isHidden { sublayer.isHidden = false }
@@ -137,16 +148,23 @@ final class MeterView: NSView {
         CATransaction.commit()
     }
 
-    // MARK: - Glyph cache
-
-    private func width(of string: String) -> CGFloat {
-        NSAttributedString(string: string, attributes: [.font: Self.font]).size().width
+    private func slotWidth(_ font: NSFont) -> CGFloat {
+        if let width = slotWidths[font.pointSize] { return width }
+        let width = ceil(NSAttributedString(string: "100", attributes: [.font: font]).size().width)
+        slotWidths[font.pointSize] = width
+        return width
     }
 
-    private func glyph(_ text: String, _ load: Load) -> Glyph? {
-        let key = "\(load)|\(text)"
+    private func lineHeight(_ font: NSFont) -> CGFloat {
+        ceil(font.ascender - font.descender)
+    }
+
+    // MARK: - Glyph cache
+
+    private func glyph(_ text: String, font: NSFont, load: Load) -> Glyph? {
+        let key = "\(font.pointSize)|\(load)|\(text)"
         if let glyph = cache[key] { return glyph }
-        guard let glyph = makeGlyph(text, color: color(for: load)) else { return nil }
+        guard let glyph = makeGlyph(text, font: font, color: color(for: load)) else { return nil }
         cache[key] = glyph
         return glyph
     }
@@ -159,9 +177,10 @@ final class MeterView: NSView {
         }
     }
 
-    private func makeGlyph(_ text: String, color: NSColor) -> Glyph? {
-        let string = NSAttributedString(string: text, attributes: [.font: Self.font, .foregroundColor: color])
+    private func makeGlyph(_ text: String, font: NSFont, color: NSColor) -> Glyph? {
+        let string = NSAttributedString(string: text, attributes: [.font: font, .foregroundColor: color])
         let width = string.size().width
+        let height = lineHeight(font)
         let scale = window?.backingScaleFactor ?? 2
         guard
             width > 0,
@@ -169,7 +188,7 @@ final class MeterView: NSView {
             let context = CGContext(
                 data: nil,
                 width: Int(ceil(width * scale)),
-                height: Int(ceil(Self.lineHeight * scale)),
+                height: Int(ceil(height * scale)),
                 bitsPerComponent: 8,
                 bytesPerRow: 0,
                 space: space,
@@ -182,7 +201,7 @@ final class MeterView: NSView {
         NSGraphicsContext.current = NSGraphicsContext(cgContext: context, flipped: false)
         // Resolve dynamic colors like labelColor against the menu bar's appearance.
         effectiveAppearance.performAsCurrentDrawingAppearance {
-            string.draw(at: NSPoint(x: 0, y: -Self.font.descender))
+            string.draw(at: NSPoint(x: 0, y: -font.descender))
         }
         NSGraphicsContext.restoreGraphicsState()
 

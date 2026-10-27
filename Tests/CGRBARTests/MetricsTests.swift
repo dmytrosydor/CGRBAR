@@ -73,6 +73,11 @@ import Testing
         #expect(Format.percent(-1) == "0%")
     }
 
+    @Test func number() {
+        #expect(Format.number(0.604) == "60")
+        #expect(Format.number(2) == "100")
+    }
+
     @Test func bytes() {
         #expect(Format.bytes(10_952_166_605) == "10.2 GB")
         #expect(Format.bytes(512 * 1_048_576) == "512 MB")

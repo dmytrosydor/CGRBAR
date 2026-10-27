@@ -34,7 +34,7 @@ final class StatusItemController: NSObject, NSMenuDelegate {
     private let colorItem = NSMenuItem(title: "Color by Load", action: #selector(toggleColor), keyEquivalent: "")
     private let loginItem = NSMenuItem(title: "Launch at Login", action: #selector(toggleLogin), keyEquivalent: "")
 
-    private static let meterPadding: CGFloat = 4
+    private static let meterPadding: CGFloat = 3
     private static let detailFont = NSFont.monospacedDigitSystemFont(ofSize: NSFont.smallSystemFontSize, weight: .regular)
 
     init(settings: Settings) {
@@ -103,7 +103,7 @@ final class StatusItemController: NSObject, NSMenuDelegate {
             let fraction = fraction(of: metric)
             return MeterSegment(
                 label: settings.showsLabels ? metric.label : nil,
-                value: fraction.map(Format.percent) ?? "–",
+                value: fraction.map(Format.number) ?? "–",
                 load: settings.colorsByLoad ? fraction.map(Load.init) ?? .normal : .normal
             )
         }
