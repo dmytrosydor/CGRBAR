@@ -1,0 +1,44 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1024 1024">
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#2A2E3D"/>
+      <stop offset="1" stop-color="#11131A"/>
+    </linearGradient>
+    <linearGradient id="cpu" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#6AA8FF"/>
+      <stop offset="1" stop-color="#2F6BF0"/>
+    </linearGradient>
+    <linearGradient id="gpu" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#C77DFF"/>
+      <stop offset="1" stop-color="#8B3DF0"/>
+    </linearGradient>
+    <linearGradient id="ram" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#3EE0C8"/>
+      <stop offset="1" stop-color="#0FA594"/>
+    </linearGradient>
+  </defs>
+  <rect x="100" y="100" width="824" height="824" rx="185" fill="url(#bg)"/>
+  <rect x="100.5" y="100.5" width="823" height="823" rx="184.5" fill="none" stroke="#FFFFFF" stroke-opacity="0.08"/>
+  <g fill="#FFFFFF" fill-opacity="0.35">
+    <rect x="356" y="196" width="30" height="70" rx="15"/>
+    <rect x="356" y="758" width="30" height="70" rx="15"/>
+    <rect x="196" y="356" width="70" height="30" rx="15"/>
+    <rect x="758" y="356" width="70" height="30" rx="15"/>
+    <rect x="450" y="196" width="30" height="70" rx="15"/>
+    <rect x="450" y="758" width="30" height="70" rx="15"/>
+    <rect x="196" y="450" width="70" height="30" rx="15"/>
+    <rect x="758" y="450" width="70" height="30" rx="15"/>
+    <rect x="544" y="196" width="30" height="70" rx="15"/>
+    <rect x="544" y="758" width="30" height="70" rx="15"/>
+    <rect x="196" y="544" width="70" height="30" rx="15"/>
+    <rect x="758" y="544" width="70" height="30" rx="15"/>
+    <rect x="638" y="196" width="30" height="70" rx="15"/>
+    <rect x="638" y="758" width="30" height="70" rx="15"/>
+    <rect x="196" y="638" width="70" height="30" rx="15"/>
+    <rect x="758" y="638" width="70" height="30" rx="15"/>
+  </g>
+  <rect x="286" y="286" width="452" height="452" rx="70" fill="#1B1E29" stroke="#FFFFFF" stroke-opacity="0.35" stroke-width="12"/>
+  <rect x="372" y="500" width="72" height="170" rx="36" fill="url(#cpu)"/>
+  <rect x="476" y="380" width="72" height="290" rx="36" fill="url(#gpu)"/>
+  <rect x="580" y="450" width="72" height="220" rx="36" fill="url(#ram)"/>
+</svg>

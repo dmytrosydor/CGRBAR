@@ -10,9 +10,12 @@ APP="build/CGRBAR.app"
 swift build -c release --arch arm64
 BIN="$(swift build -c release --arch arm64 --show-bin-path)/CGRBAR"
 
+./Scripts/make_icon.sh
+
 rm -rf "$APP"
-mkdir -p "$APP/Contents/MacOS"
+mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources"
 cp "$BIN" "$APP/Contents/MacOS/CGRBAR"
+cp build/AppIcon.icns "$APP/Contents/Resources/AppIcon.icns"
 
 cat > "$APP/Contents/Info.plist" <<EOF
 <?xml version="1.0" encoding="UTF-8"?>
@@ -21,6 +24,8 @@ cat > "$APP/Contents/Info.plist" <<EOF
 <dict>
     <key>CFBundleExecutable</key>
     <string>CGRBAR</string>
+    <key>CFBundleIconFile</key>
+    <string>AppIcon</string>
     <key>CFBundleIdentifier</key>
     <string>com.dmytrosydor.cgrbar</string>
     <key>CFBundleName</key>
