@@ -6,8 +6,10 @@ A tiny macOS menu bar app that shows CPU, GPU and RAM usage. Nothing else.
 CPU  12%  GPU  58%  RAM  63%
 ```
 
-- **Light.** Native AppKit, no dependencies, about 13 MB of memory. Sampling all three
-  metrics takes about 20 µs.
+- **Light.** Native AppKit, no dependencies, about 14 MB of memory and roughly
+  0.03% CPU at the default 2 s interval. Sampling all three metrics takes about
+  20 µs, and the menu bar readout is drawn from cached glyph images, so an
+  update never re-runs text layout.
 - **No root.** CPU and RAM come from Mach host statistics, GPU from the
   `IOAccelerator` driver statistics in the IORegistry.
 - **Customizable.** Pick which metrics show in the menu bar, the update interval

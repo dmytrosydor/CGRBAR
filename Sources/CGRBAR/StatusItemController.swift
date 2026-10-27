@@ -1,7 +1,7 @@
 import AppKit
 import ServiceManagement
 
-/// Owns the menu bar item: samples metrics on a timer, draws the title and
+/// Owns the menu bar item: samples metrics on a timer, updates the readout and
 /// keeps the dropdown menu up to date while it is open.
 @MainActor
 final class StatusItemController: NSObject, NSMenuDelegate {
@@ -19,7 +19,8 @@ final class StatusItemController: NSObject, NSMenuDelegate {
 
     private var timer: Timer?
     private var isMenuOpen = false
-    private var lastTitle: NSAttributedString?
+    private let meter = MeterView()
+    private var lastSummary = ""
 
     private let cpuItem = NSMenuItem()
     private let cpuDetailItem = NSMenuItem()
@@ -33,12 +34,13 @@ final class StatusItemController: NSObject, NSMenuDelegate {
     private let colorItem = NSMenuItem(title: "Color by Load", action: #selector(toggleColor), keyEquivalent: "")
     private let loginItem = NSMenuItem(title: "Launch at Login", action: #selector(toggleLogin), keyEquivalent: "")
 
-    private static let titleFont = NSFont.monospacedDigitSystemFont(ofSize: NSFont.systemFontSize, weight: .regular)
+    private static let meterPadding: CGFloat = 4
     private static let detailFont = NSFont.monospacedDigitSystemFont(ofSize: NSFont.smallSystemFontSize, weight: .regular)
 
     init(settings: Settings) {
         self.settings = settings
         super.init()
+        setUpMeter()
         buildMenu()
         statusItem.menu = menu
     }
@@ -70,7 +72,7 @@ final class StatusItemController: NSObject, NSMenuDelegate {
         cpu = cpuSampler.sample() ?? cpu
         gpu = settings.isShown(.gpu) || isMenuOpen ? gpuSampler.sample() : nil
         memory = settings.isShown(.memory) || isMenuOpen ? memorySampler.sample() : nil
-        updateTitle()
+        updateMeter()
         if isMenuOpen { updateDetails() }
     }
 
@@ -84,21 +86,35 @@ final class StatusItemController: NSObject, NSMenuDelegate {
         scheduleTimer()
     }
 
-    // MARK: - Menu bar title
+    // MARK: - Menu bar readout
 
-    private func updateTitle() {
-        let title = NSMutableAttributedString()
-        for (index, metric) in settings.shownMetrics.enumerated() {
-            if index > 0 { title.append(text("  ")) }
-            let fraction = fraction(of: metric)
-            let value = fraction.map(Format.paddedPercent) ?? "\u{2007}\u{2007}–"
-            let segment = settings.showsLabels ? "\(metric.label) \(value)" : value
-            title.append(text(segment, color: color(for: fraction)))
+    private func setUpMeter() {
+        guard let button = statusItem.button else { return }
+        meter.frame = button.bounds
+        meter.autoresizingMask = [.width, .height]
+        meter.onWidthChange = { [weak self] width in
+            self?.statusItem.length = ceil(width) + 2 * Self.meterPadding
         }
-        // Skip redraws when nothing visible changed.
-        guard title != lastTitle else { return }
-        lastTitle = title
-        statusItem.button?.attributedTitle = title
+        button.addSubview(meter)
+    }
+
+    private func updateMeter() {
+        let segments = settings.shownMetrics.map { metric in
+            let fraction = fraction(of: metric)
+            return MeterSegment(
+                label: settings.showsLabels ? metric.label : nil,
+                value: fraction.map(Format.percent) ?? "–",
+                load: settings.colorsByLoad ? fraction.map(Load.init) ?? .normal : .normal
+            )
+        }
+        meter.update(segments)
+
+        let summary = segments.map { [$0.label, $0.value].compactMap { $0 }.joined(separator: " ") }
+            .joined(separator: ", ")
+        if summary != lastSummary {
+            lastSummary = summary
+            statusItem.button?.setAccessibilityLabel(summary)
+        }
     }
 
     private func fraction(of metric: Metric) -> Double? {
@@ -107,19 +123,6 @@ final class StatusItemController: NSObject, NSMenuDelegate {
         case .gpu: gpu?.device
         case .memory: memory?.fraction
         }
-    }
-
-    private func color(for fraction: Double?) -> NSColor {
-        guard settings.colorsByLoad, let fraction else { return .labelColor }
-        switch Load(fraction) {
-        case .normal: return .labelColor
-        case .high: return .systemOrange
-        case .critical: return .systemRed
-        }
-    }
-
-    private func text(_ string: String, color: NSColor = .labelColor) -> NSAttributedString {
-        NSAttributedString(string: string, attributes: [.font: Self.titleFont, .foregroundColor: color])
     }
 
     // MARK: - Menu

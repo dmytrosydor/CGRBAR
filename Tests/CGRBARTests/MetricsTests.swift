@@ -73,11 +73,6 @@ import Testing
         #expect(Format.percent(-1) == "0%")
     }
 
-    @Test func paddedPercentHasFixedWidth() {
-        #expect(Format.paddedPercent(0.05) == "\u{2007}\u{2007}5%")
-        #expect(Format.paddedPercent(1).count == 4)
-    }
-
     @Test func bytes() {
         #expect(Format.bytes(10_952_166_605) == "10.2 GB")
         #expect(Format.bytes(512 * 1_048_576) == "512 MB")

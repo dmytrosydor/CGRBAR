@@ -18,14 +18,6 @@ enum Format {
         "\(Int((min(max(fraction, 0), 1) * 100).rounded()))%"
     }
 
-    /// Percent padded to three digits with figure spaces, so the menu bar
-    /// text keeps a fixed width as values change.
-    static func paddedPercent(_ fraction: Double) -> String {
-        let text = percent(fraction)
-        let padding = max(0, 4 - text.count)
-        return String(repeating: "\u{2007}", count: padding) + text
-    }
-
     /// "10.2 GB", using binary units like Activity Monitor.
     static func bytes(_ value: UInt64) -> String {
         let gib = Double(value) / 1_073_741_824
