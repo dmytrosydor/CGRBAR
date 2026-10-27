@@ -1,4 +1,5 @@
 import AppKit
+import SwiftUI
 import Observation
 
 /// State behind the popover panel. Only exists while the panel is open.
@@ -25,6 +26,15 @@ final class PanelModel {
     @ObservationIgnored var onQuit: () -> Void = {}
 
     let summary = SystemInfo.summary
+
+    func tint(_ base: Color, _ value: Double?) -> Color {
+        guard colorsByLoad, let value else { return base }
+        switch Load(value, high: highThreshold, critical: criticalThreshold) {
+        case .normal: return base
+        case .high: return .orange
+        case .critical: return .red
+        }
+    }
 
     @ObservationIgnored private var apps: [pid_t: NSRunningApplication?] = [:]
 

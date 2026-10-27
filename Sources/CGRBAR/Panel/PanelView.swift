@@ -7,47 +7,11 @@ struct PanelView: View {
         VStack(alignment: .leading, spacing: 10) {
             header
 
-            MetricCard(
-                title: "CPU",
-                value: model.cpu?.total,
-                accessory: nil,
-                history: model.cpuHistory,
-                capacity: model.historyCapacity,
-                tint: tint(.blue, model.cpu?.total)
-            ) {
-                if let cpu = model.cpu {
-                    Text("user \(Format.percent(cpu.user)) · system \(Format.percent(cpu.system))")
-                }
-            }
-
-            MetricCard(
-                title: "GPU",
-                value: model.gpu?.device,
-                accessory: model.gpu?.memoryInUse.map(Format.bytes),
-                history: model.gpuHistory,
-                capacity: model.historyCapacity,
-                tint: tint(.purple, model.gpu?.device)
-            ) {
-                if let gpu = model.gpu {
-                    Text(gpuDetail(gpu))
-                } else {
-                    Text("Not available")
-                }
-            }
-
-            MetricCard(
-                title: "Memory",
-                pressure: model.memory?.pressure,
-                value: model.memory?.fraction,
-                accessory: model.memory.map { Format.bytes($0.used) },
-                history: model.memoryHistory,
-                capacity: model.historyCapacity,
-                tint: tint(.teal, model.memory?.fraction)
-            ) {
-                if let memory = model.memory {
-                    Text("app \(Format.gigabytes(memory.app)) · wired \(Format.gigabytes(memory.wired)) · compressed \(Format.gigabytes(memory.compressed)) GB")
-                }
-            }
+            // Each section reads only its own data, so a tick re-renders the
+            // sections that changed instead of the whole panel.
+            CPUSection(model: model)
+            GPUSection(model: model)
+            MemorySection(model: model)
 
             ProcessList(model: model)
 
@@ -89,20 +53,73 @@ struct PanelView: View {
         .font(.callout)
         .foregroundStyle(.secondary)
     }
+}
 
-    private func gpuDetail(_ gpu: GPUUsage) -> String {
+// MARK: - Sections
+
+private struct CPUSection: View {
+    let model: PanelModel
+
+    var body: some View {
+        MetricCard(
+            title: "CPU",
+            value: model.cpu?.total,
+            accessory: nil,
+            history: model.cpuHistory,
+            capacity: model.historyCapacity,
+            tint: model.tint(.blue, model.cpu?.total)
+        ) {
+            if let cpu = model.cpu {
+                Text("user \(Format.percent(cpu.user)) · system \(Format.percent(cpu.system))")
+            }
+        }
+    }
+}
+
+private struct GPUSection: View {
+    let model: PanelModel
+
+    var body: some View {
+        MetricCard(
+            title: "GPU",
+            value: model.gpu?.device,
+            accessory: model.gpu?.memoryInUse.map(Format.bytes),
+            history: model.gpuHistory,
+            capacity: model.historyCapacity,
+            tint: model.tint(.purple, model.gpu?.device)
+        ) {
+            if let gpu = model.gpu {
+                Text(detail(gpu))
+            } else {
+                Text("Not available")
+            }
+        }
+    }
+
+    private func detail(_ gpu: GPUUsage) -> String {
         var parts: [String] = []
         if let renderer = gpu.renderer { parts.append("renderer \(Format.percent(renderer))") }
         if let tiler = gpu.tiler { parts.append("tiler \(Format.percent(tiler))") }
         return parts.joined(separator: " · ")
     }
+}
 
-    private func tint(_ base: Color, _ value: Double?) -> Color {
-        guard model.colorsByLoad, let value else { return base }
-        switch Load(value, high: model.highThreshold, critical: model.criticalThreshold) {
-        case .normal: return base
-        case .high: return .orange
-        case .critical: return .red
+private struct MemorySection: View {
+    let model: PanelModel
+
+    var body: some View {
+        MetricCard(
+            title: "Memory",
+            pressure: model.memory?.pressure,
+            value: model.memory?.fraction,
+            accessory: model.memory.map { Format.bytes($0.used) },
+            history: model.memoryHistory,
+            capacity: model.historyCapacity,
+            tint: model.tint(.teal, model.memory?.fraction)
+        ) {
+            if let memory = model.memory {
+                Text("app \(Format.gigabytes(memory.app)) · wired \(Format.gigabytes(memory.wired)) · compressed \(Format.gigabytes(memory.compressed)) GB")
+            }
         }
     }
 }

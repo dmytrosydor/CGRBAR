@@ -38,8 +38,8 @@ final class MeterView: NSView {
     private var segments: [MeterSegment] = []
     private var meterLayout = MeterLayout()
 
-    private var glyphs: [String: Glyph] = [:]
-    private var colors: [String: CGColor] = [:]
+    private var glyphs: [GlyphKey: Glyph] = [:]
+    private var colors: [ColorKey: CGColor] = [:]
     private var slotWidths: [CGFloat: CGFloat] = [:]
 
     // Separate containers keep bars below charts below text.
@@ -53,6 +53,21 @@ final class MeterView: NSView {
     private struct Glyph {
         var image: CGImage
         var width: CGFloat
+    }
+
+    // Struct keys instead of interpolated strings: lookups run for every
+    // character on every update.
+    private struct GlyphKey: Hashable {
+        var text: String
+        var font: String
+        var size: CGFloat
+        var height: CGFloat
+        var tint: MeterTint
+    }
+
+    private struct ColorKey: Hashable {
+        var tint: MeterTint
+        var alpha: CGFloat
     }
 
     private enum Element {
@@ -101,11 +116,14 @@ final class MeterView: NSView {
     // Clicks belong to the status bar button underneath.
     override func hitTest(_ point: NSPoint) -> NSView? { nil }
 
-    func update(_ segments: [MeterSegment], layout: MeterLayout) {
-        guard segments != self.segments || layout != meterLayout else { return }
+    /// Returns false when nothing changed and nothing was drawn.
+    @discardableResult
+    func update(_ segments: [MeterSegment], layout: MeterLayout) -> Bool {
+        guard segments != self.segments || layout != meterLayout else { return false }
         self.segments = segments
         meterLayout = layout
         render()
+        return true
     }
 
     override func viewDidChangeEffectiveAppearance() {
@@ -363,7 +381,7 @@ final class MeterView: NSView {
 
     /// Dynamic colors resolved against the menu bar's appearance.
     private func cgColor(_ tint: MeterTint, alpha: CGFloat) -> CGColor {
-        let key = "\(tint)|\(alpha)"
+        let key = ColorKey(tint: tint, alpha: alpha)
         if let color = colors[key] { return color }
         var color = CGColor(gray: 0, alpha: 1)
         effectiveAppearance.performAsCurrentDrawingAppearance {
@@ -374,18 +392,20 @@ final class MeterView: NSView {
     }
 
     private func glyph(_ text: String, font: NSFont, tint: MeterTint) -> Glyph? {
-        let key = "\(font.fontName)|\(font.pointSize)|\(tint)|\(text)"
+        let key = GlyphKey(text: text, font: font.fontName, size: font.pointSize, height: 0, tint: tint)
         if let glyph = glyphs[key] { return glyph }
         let string = NSAttributedString(string: text, attributes: [.font: font, .foregroundColor: nsColor(tint)])
         let glyph = makeGlyph(width: string.size().width, height: lineHeight(font)) {
-            string.draw(at: NSPoint(x: 0, y: -font.descender))
+            // In an unflipped context the point is the bottom of the line,
+            // descender included, so the baseline lands at -descender.
+            string.draw(at: .zero)
         }
         glyphs[key] = glyph
         return glyph
     }
 
     private func symbolGlyph(_ name: String, size: CGFloat, height: CGFloat, tint: MeterTint) -> Glyph? {
-        let key = "symbol|\(name)|\(size)|\(height)|\(tint)"
+        let key = GlyphKey(text: name, font: "symbol", size: size, height: height, tint: tint)
         if let glyph = glyphs[key] { return glyph }
         let configuration = NSImage.SymbolConfiguration(pointSize: size, weight: .medium)
             .applying(.init(paletteColors: [nsColor(tint)]))

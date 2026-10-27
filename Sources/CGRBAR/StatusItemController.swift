@@ -155,7 +155,7 @@ final class StatusItemController: NSObject, NSMenuDelegate, NSPopoverDelegate {
         let layout = meterLayout
         for entry in items {
             let segments = entry.metrics.map(segment)
-            entry.meter.update(segments, layout: layout)
+            guard entry.meter.update(segments, layout: layout) else { continue }
 
             let summary = segments.map { "\($0.metric.label) \($0.value.map(Format.percent) ?? "unavailable")" }
                 .joined(separator: ", ")
@@ -164,10 +164,11 @@ final class StatusItemController: NSObject, NSMenuDelegate, NSPopoverDelegate {
                 entry.item.button?.setAccessibilityLabel(summary)
             }
         }
-        if settingsWindow.isVisible {
-            preview.segments = settings.shownMetrics.map(segment)
-            preview.layout = layout
-        }
+        if settingsWindow.isVisible { updatePreview() }
+    }
+
+    private func updatePreview() {
+        preview.update(settings.shownMetrics.map(segment), layout: meterLayout)
     }
 
     private var meterLayout: MeterLayout {
@@ -260,16 +261,21 @@ final class StatusItemController: NSObject, NSMenuDelegate, NSPopoverDelegate {
 
     private func updatePanel() {
         guard let panel else { return }
-        panel.cpu = cpu
-        panel.gpu = gpu
-        panel.memory = memory
-        panel.cpuHistory = cpuHistory.values
-        panel.gpuHistory = gpuHistory.values
-        panel.memoryHistory = memoryHistory.values
-        panel.colorsByLoad = settings.colorsByLoad
-        panel.highThreshold = settings.highThreshold
-        panel.criticalThreshold = max(settings.criticalThreshold, settings.highThreshold)
-        panel.processes = processSampler.top(by: panel.processSort, limit: Self.processLimit)
+        // Observable setters notify even for equal values; skip those so
+        // unchanged sections don't re-render.
+        func set<Value: Equatable>(_ keyPath: ReferenceWritableKeyPath<PanelModel, Value>, _ value: Value) {
+            if panel[keyPath: keyPath] != value { panel[keyPath: keyPath] = value }
+        }
+        set(\.cpu, cpu)
+        set(\.gpu, gpu)
+        set(\.memory, memory)
+        set(\.cpuHistory, cpuHistory.values)
+        set(\.gpuHistory, gpuHistory.values)
+        set(\.memoryHistory, memoryHistory.values)
+        set(\.colorsByLoad, settings.colorsByLoad)
+        set(\.highThreshold, settings.highThreshold)
+        set(\.criticalThreshold, max(settings.criticalThreshold, settings.highThreshold))
+        set(\.processes, processSampler.top(by: panel.processSort, limit: Self.processLimit))
     }
 
     func popoverDidClose(_ notification: Notification) {
@@ -283,8 +289,7 @@ final class StatusItemController: NSObject, NSMenuDelegate, NSPopoverDelegate {
 
     private func openSettings() {
         if popover.isShown { popover.performClose(nil) }
-        preview.segments = settings.shownMetrics.map(segment)
-        preview.layout = meterLayout
+        settingsWindow.onPreviewAppear = { [weak self] in self?.updatePreview() }
         settingsWindow.show()
     }
 

@@ -4,10 +4,11 @@ import SwiftUI
 struct SettingsView: View {
     @Bindable var settings: Settings
     let preview: MeterPreviewModel
+    let onPreviewAppear: () -> Void
 
     var body: some View {
         TabView {
-            MenuBarPane(settings: settings, preview: preview)
+            MenuBarPane(settings: settings, preview: preview, onPreviewAppear: onPreviewAppear)
                 .tabItem { Label("Menu Bar", systemImage: "menubar.rectangle") }
             GeneralPane(settings: settings)
                 .tabItem { Label("General", systemImage: "gearshape") }
@@ -23,15 +24,12 @@ struct SettingsView: View {
 private struct MenuBarPane: View {
     @Bindable var settings: Settings
     let preview: MeterPreviewModel
+    let onPreviewAppear: () -> Void
 
     var body: some View {
         Form {
             Section {
-                MeterPreview(segments: preview.segments, layout: preview.layout)
-                    .frame(height: 26)
-                    .frame(maxWidth: .infinity)
-                    .padding(.vertical, 6)
-                    .background(.quaternary.opacity(0.6), in: .rect(cornerRadius: 8))
+                PreviewRow(preview: preview, onAppear: onPreviewAppear)
             } footer: {
                 Text("Live preview of the menu bar.")
                     .font(.caption)
@@ -96,6 +94,19 @@ private struct MenuBarPane: View {
         .onChange(of: settings.criticalThreshold) { _, critical in
             if settings.highThreshold > critical { settings.highThreshold = critical }
         }
+    }
+}
+
+private struct PreviewRow: View {
+    let preview: MeterPreviewModel
+    let onAppear: () -> Void
+
+    var body: some View {
+        MeterPreview(model: preview, onAppear: onAppear)
+            .frame(height: 26)
+            .frame(maxWidth: .infinity)
+            .padding(.vertical, 6)
+            .background(.quaternary.opacity(0.6), in: .rect(cornerRadius: 8))
     }
 }
 
