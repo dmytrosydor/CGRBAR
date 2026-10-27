@@ -81,11 +81,20 @@ import Testing
     @Test func bytes() {
         #expect(Format.bytes(10_952_166_605) == "10.2 GB")
         #expect(Format.bytes(512 * 1_048_576) == "512 MB")
+        #expect(Format.gigabytes(4_509_715_660) == "4.2")
     }
 
     @Test func loadThresholds() {
         #expect(Load(0.5) == .normal)
         #expect(Load(0.7) == .high)
         #expect(Load(0.95) == .critical)
+    }
+}
+
+@Suite struct HistoryTests {
+    @Test func keepsOnlyTheNewestValues() {
+        var history = History(capacity: 3)
+        for value in [0.1, 0.2, 0.3, 0.4] { history.append(value) }
+        #expect(history.values == [0.2, 0.3, 0.4])
     }
 }

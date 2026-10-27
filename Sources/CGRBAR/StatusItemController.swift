@@ -1,33 +1,34 @@
 import AppKit
 import ServiceManagement
+import SwiftUI
 
-/// Owns the menu bar item: samples metrics on a timer, updates the readout and
-/// keeps the dropdown menu up to date while it is open.
+/// Owns the menu bar item: samples metrics on a timer, updates the readout,
+/// shows the panel on click and the settings menu on right-click.
 @MainActor
-final class StatusItemController: NSObject, NSMenuDelegate {
+final class StatusItemController: NSObject, NSMenuDelegate, NSPopoverDelegate {
     private let settings: Settings
     private let statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
-    private let menu = NSMenu()
+    private let settingsMenu = NSMenu()
+    private let popover = NSPopover()
 
     private let cpuSampler = CPUSampler()
     private let gpuSampler = GPUSampler()
     private let memorySampler = MemorySampler()
+    private let processSampler = ProcessSampler()
 
     private var cpu: CPUUsage?
     private var gpu: GPUUsage?
     private var memory: MemoryUsage?
+    private var cpuHistory = History(capacity: StatusItemController.historyCapacity)
+    private var gpuHistory = History(capacity: StatusItemController.historyCapacity)
+    private var memoryHistory = History(capacity: StatusItemController.historyCapacity)
 
     private var timer: Timer?
-    private var isMenuOpen = false
     private let meter = MeterView()
     private var lastSummary = ""
+    /// Exists only while the panel is open.
+    private var panel: PanelModel?
 
-    private let cpuItem = NSMenuItem()
-    private let cpuDetailItem = NSMenuItem()
-    private let gpuItem = NSMenuItem()
-    private let gpuDetailItem = NSMenuItem()
-    private let memoryItem = NSMenuItem()
-    private let memoryDetailItem = NSMenuItem()
     private var metricItems: [Metric: NSMenuItem] = [:]
     private var intervalItems: [NSMenuItem] = []
     private let labelsItem = NSMenuItem(title: "Show Labels", action: #selector(toggleLabels), keyEquivalent: "")
@@ -35,14 +36,17 @@ final class StatusItemController: NSObject, NSMenuDelegate {
     private let loginItem = NSMenuItem(title: "Launch at Login", action: #selector(toggleLogin), keyEquivalent: "")
 
     private static let meterPadding: CGFloat = 3
-    private static let detailFont = NSFont.monospacedDigitSystemFont(ofSize: NSFont.smallSystemFontSize, weight: .regular)
+    private static let historyCapacity = 60
+    private static let processLimit = 6
 
     init(settings: Settings) {
         self.settings = settings
         super.init()
         setUpMeter()
-        buildMenu()
-        statusItem.menu = menu
+        buildSettingsMenu()
+        popover.behavior = .transient
+        popover.animates = true
+        popover.delegate = self
     }
 
     func start() {
@@ -68,12 +72,22 @@ final class StatusItemController: NSObject, NSMenuDelegate {
     }
 
     private func tick() {
-        // Hidden metrics are only sampled while the menu shows them.
-        cpu = cpuSampler.sample() ?? cpu
-        gpu = settings.isShown(.gpu) || isMenuOpen ? gpuSampler.sample() : nil
-        memory = settings.isShown(.memory) || isMenuOpen ? memorySampler.sample() : nil
+        // All three together cost about 20 µs, so they always run to keep the
+        // panel's history complete.
+        if let cpu = cpuSampler.sample() {
+            self.cpu = cpu
+            cpuHistory.append(cpu.total)
+        }
+        gpu = gpuSampler.sample()
+        if let gpu { gpuHistory.append(gpu.device) }
+        memory = memorySampler.sample()
+        if let memory { memoryHistory.append(memory.fraction) }
+
         updateMeter()
-        if isMenuOpen { updateDetails() }
+        if panel != nil {
+            processSampler.sample()
+            updatePanel()
+        }
     }
 
     @objc private func screensDidSleep() {
@@ -96,6 +110,9 @@ final class StatusItemController: NSObject, NSMenuDelegate {
             self?.statusItem.length = ceil(width) + 2 * Self.meterPadding
         }
         button.addSubview(meter)
+        button.target = self
+        button.action = #selector(buttonClicked)
+        button.sendAction(on: [.leftMouseUp, .rightMouseUp])
     }
 
     private func updateMeter() {
@@ -125,17 +142,76 @@ final class StatusItemController: NSObject, NSMenuDelegate {
         }
     }
 
-    // MARK: - Menu
-
-    private func buildMenu() {
-        menu.delegate = self
-        menu.autoenablesItems = false
-
-        for item in [cpuItem, cpuDetailItem, gpuItem, gpuDetailItem, memoryItem, memoryDetailItem] {
-            item.isEnabled = false
-            menu.addItem(item)
+    @objc private func buttonClicked() {
+        let event = NSApp.currentEvent
+        if event?.type == .rightMouseUp || event?.modifierFlags.contains(.control) == true {
+            showSettingsMenu()
+        } else {
+            togglePanel()
         }
-        menu.addItem(.separator())
+    }
+
+    // MARK: - Panel
+
+    private func togglePanel() {
+        if popover.isShown {
+            popover.performClose(nil)
+            return
+        }
+        guard let button = statusItem.button else { return }
+
+        let model = PanelModel()
+        model.historyCapacity = Self.historyCapacity
+        model.onSortChange = { [weak self] in self?.updatePanel() }
+        model.onShowSettings = { [weak self] in self?.showSettingsMenu() }
+        model.onQuit = { NSApp.terminate(nil) }
+        panel = model
+
+        processSampler.reset()
+        processSampler.sample()
+        updatePanel()
+
+        let host = NSHostingController(rootView: PanelView(model: model))
+        host.sizingOptions = .preferredContentSize
+        popover.contentViewController = host
+        NSApp.activate()
+        popover.show(relativeTo: button.bounds, of: button, preferredEdge: .minY)
+
+        // Per-process CPU needs two samples; take the second one quickly
+        // instead of waiting a full interval.
+        Timer.scheduledTimer(withTimeInterval: 0.5, repeats: false) { [weak self] _ in
+            MainActor.assumeIsolated {
+                guard let self, self.panel != nil else { return }
+                self.processSampler.sample()
+                self.updatePanel()
+            }
+        }
+    }
+
+    private func updatePanel() {
+        guard let panel else { return }
+        panel.cpu = cpu
+        panel.gpu = gpu
+        panel.memory = memory
+        panel.cpuHistory = cpuHistory.values
+        panel.gpuHistory = gpuHistory.values
+        panel.memoryHistory = memoryHistory.values
+        panel.colorsByLoad = settings.colorsByLoad
+        panel.processes = processSampler.top(by: panel.processSort, limit: Self.processLimit)
+    }
+
+    func popoverDidClose(_ notification: Notification) {
+        // Drop the SwiftUI tree and process data, so a closed panel costs nothing.
+        panel = nil
+        popover.contentViewController = nil
+        processSampler.reset()
+    }
+
+    // MARK: - Settings menu
+
+    private func buildSettingsMenu() {
+        settingsMenu.delegate = self
+        settingsMenu.autoenablesItems = false
 
         let metricsMenu = NSMenu()
         for metric in Metric.allCases {
@@ -145,7 +221,7 @@ final class StatusItemController: NSObject, NSMenuDelegate {
             metricsMenu.addItem(item)
             metricItems[metric] = item
         }
-        menu.addItem(submenu("Show in Menu Bar", metricsMenu))
+        settingsMenu.addItem(submenu("Show in Menu Bar", metricsMenu))
 
         let intervalMenu = NSMenu()
         for interval in Settings.intervals {
@@ -155,25 +231,21 @@ final class StatusItemController: NSObject, NSMenuDelegate {
             intervalMenu.addItem(item)
             intervalItems.append(item)
         }
-        menu.addItem(submenu("Update Every", intervalMenu))
+        settingsMenu.addItem(submenu("Update Every", intervalMenu))
 
         for item in [labelsItem, colorItem] {
             item.target = self
-            menu.addItem(item)
+            settingsMenu.addItem(item)
         }
 
         // Login items need a real app bundle; hide the option for bare builds.
         if Bundle.main.bundlePath.hasSuffix(".app") {
             loginItem.target = self
-            menu.addItem(loginItem)
+            settingsMenu.addItem(loginItem)
         }
 
-        menu.addItem(.separator())
-        let quit = NSMenuItem(title: "Quit CGRBAR", action: #selector(NSApplication.terminate), keyEquivalent: "q")
-        menu.addItem(quit)
-
-        updateDetails()
-        updateSettingsItems()
+        settingsMenu.addItem(.separator())
+        settingsMenu.addItem(NSMenuItem(title: "Quit CGRBAR", action: #selector(NSApplication.terminate), keyEquivalent: "q"))
     }
 
     private func submenu(_ title: String, _ submenu: NSMenu) -> NSMenuItem {
@@ -182,60 +254,17 @@ final class StatusItemController: NSObject, NSMenuDelegate {
         return item
     }
 
+    private func showSettingsMenu() {
+        if popover.isShown {
+            // From the panel's gear button: open at the pointer.
+            settingsMenu.popUp(positioning: nil, at: NSEvent.mouseLocation, in: nil)
+        } else if let button = statusItem.button {
+            settingsMenu.popUp(positioning: nil, at: NSPoint(x: 0, y: button.bounds.height + 4), in: button)
+        }
+    }
+
     func menuWillOpen(_ menu: NSMenu) {
-        isMenuOpen = true
-        tick()
         updateSettingsItems()
-    }
-
-    func menuDidClose(_ menu: NSMenu) {
-        isMenuOpen = false
-    }
-
-    private func updateDetails() {
-        let cores = ProcessInfo.processInfo.activeProcessorCount
-        if let cpu {
-            set(cpuItem, "CPU  \(Format.percent(cpu.total))")
-            set(cpuDetailItem, "user \(Format.percent(cpu.user)) · system \(Format.percent(cpu.system)) · \(cores) cores", detail: true)
-        } else {
-            set(cpuItem, "CPU  –")
-            set(cpuDetailItem, "\(cores) cores", detail: true)
-        }
-
-        if let gpu {
-            set(gpuItem, "GPU  \(Format.percent(gpu.device))")
-            var parts: [String] = []
-            if let renderer = gpu.renderer { parts.append("renderer \(Format.percent(renderer))") }
-            if let tiler = gpu.tiler { parts.append("tiler \(Format.percent(tiler))") }
-            if let memory = gpu.memoryInUse { parts.append("memory \(Format.bytes(memory))") }
-            set(gpuDetailItem, parts.joined(separator: " · "), detail: true)
-        } else {
-            set(gpuItem, "GPU  unavailable")
-            set(gpuDetailItem, "", detail: true)
-        }
-        gpuDetailItem.isHidden = gpu == nil
-
-        if let memory {
-            set(memoryItem, "RAM  \(Format.bytes(memory.used)) of \(Format.bytes(memory.total)) · \(Format.percent(memory.fraction))")
-            var parts = [
-                "app \(Format.bytes(memory.app))",
-                "wired \(Format.bytes(memory.wired))",
-                "compressed \(Format.bytes(memory.compressed))",
-            ]
-            if let pressure = memory.pressure { parts.append("pressure \(pressure.name)") }
-            set(memoryDetailItem, parts.joined(separator: " · "), detail: true)
-        } else {
-            set(memoryItem, "RAM  –")
-            set(memoryDetailItem, "", detail: true)
-        }
-        memoryDetailItem.isHidden = memory == nil
-    }
-
-    private func set(_ item: NSMenuItem, _ title: String, detail: Bool = false) {
-        item.attributedTitle = NSAttributedString(string: title, attributes: [
-            .font: detail ? Self.detailFont : NSFont.menuFont(ofSize: 0),
-            .foregroundColor: detail ? NSColor.secondaryLabelColor : NSColor.labelColor,
-        ])
     }
 
     private func updateSettingsItems() {
@@ -295,17 +324,8 @@ final class StatusItemController: NSObject, NSMenuDelegate {
     }
 
     private func settingsChanged() {
-        tick()
+        updateMeter()
+        updatePanel()
         updateSettingsItems()
-    }
-}
-
-private extension MemoryPressure {
-    var name: String {
-        switch self {
-        case .normal: "normal"
-        case .warning: "warning"
-        case .critical: "critical"
-        }
     }
 }

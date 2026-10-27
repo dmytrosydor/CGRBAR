@@ -23,6 +23,11 @@ enum Format {
         String(Int((min(max(fraction, 0), 1) * 100).rounded()))
     }
 
+    /// "10.2" in GiB, for lists that print the unit once.
+    static func gigabytes(_ value: UInt64) -> String {
+        String(format: "%.1f", Double(value) / 1_073_741_824)
+    }
+
     /// "10.2 GB", using binary units like Activity Monitor.
     static func bytes(_ value: UInt64) -> String {
         let gib = Double(value) / 1_073_741_824
