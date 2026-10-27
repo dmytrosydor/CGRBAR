@@ -1,0 +1,16 @@
+# Swift / Xcode
+.build/
+.swiftpm/
+DerivedData/
+*.xcodeproj/
+xcuserdata/
+
+# Packaged app
+build/
+
+# macOS
+.DS_Store
+
+# Local environment
+.env
+.env.*
