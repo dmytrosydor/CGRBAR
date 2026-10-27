@@ -39,8 +39,14 @@
 
 ## Install
 
-Build it from source (see below), then move `build/CGRBAR.app` to
-`/Applications`.
+Build and install it from source:
+
+```sh
+./Scripts/install.sh
+```
+
+This builds the app, puts it in `/Applications` and starts it. Run it again to
+update.
 
 The app is not notarized. On first launch, right-click it in Finder and choose
 **Open**. Starting with macOS 15, you may need to allow it in
@@ -59,6 +65,7 @@ macOS 14 or later on Apple Silicon.
 swift build                 # debug build
 swift test                  # unit tests
 ./Scripts/package_app.sh    # release app at build/CGRBAR.app, with icon
+./Scripts/install.sh        # package, install to /Applications and start
 ```
 
 The icon is generated from `Assets/logo.svg` by `Scripts/make_icon.sh`.
